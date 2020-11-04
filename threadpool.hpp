@@ -1,71 +1,72 @@
-#ifndef THREADPOOL_HPP__
-#define THREADPOOL_HPP__
+#ifndef _THREADPOOL_H_
+#define _THREADPOOL_H_
 
+#include <atomic>
+#include <cassert>
+#include <condition_variable>
+#include <functional>
+#include <future>
+#include <memory>
 #include <mutex>
 #include <queue>
-#include <vector>
-#include <thread>
 #include <string>
-#include <atomic>
-#include <functional>
-#include <condition_variable>
+#include <thread>
+#include <vector>
+#include "macro.h"
 
 class ThreadPool
 {
 public:
-    FixedThreadPool(unsigned pool_size) :
-        stop { false },
-        size { pool_size }
-    {
-        for(size_t i = 0; i < size; ++i)
-        {
+    DISALLOW_COPY_AND_ASSIGN(ThreadPool);
+
+    ThreadPool(unsigned size) :
+        stop { false } {
+        for(size_t ii = 0; ii < size; ++ii) {
             threads.emplace_back
             (
-                [&]()
-                {
-                    for(;;)
-                    {
+                [&]() {
+                    for(;;) {
                         std::unique_lock<std::mutex> lck(mtx);
-                        cv.wait(lck, [&]{ return stop || !requests.empty(); });
-                        if(stop && requests.empty()) return;
-                        Request * request = requests.front(); requests.pop();
-                        lck.unlock(); // local variable doesn't need synchronziation protection
-                        handleRequest(request);
+                        cv.wait(lck, [&]{ return stop || !tasks.empty(); });
+                        if(stop && tasks.empty()) { return; }
+                        auto task = std::move(tasks.front()); tasks.pop();
+                        lck.unlock();
+                        task();
                     }
                 }
             );
         }
     }
 
-    virtual void execute(Request * request) override
-    {
-        {
-            std::unique_lock<std::mutex> lck(mtx);
-            requests.push(request);
-        }
+    template <typename Func, typename ... Arg>
+    auto execute(Func&& func, Arg&& ... arg) {
+        using Ret = typename std::result_of<Func(Arg...)>::type;
+        auto task = std::make_shared<std::packaged_task<Ret()>> (
+                std::bind(std::forward<Func>(func), std::forward<Arg>(arg)...)
+            );
+        std::future<Ret> fut = task->get_future();
+        std::unique_lock<std::mutex> lck(mtx);
+        assert(!stop);
+        tasks.emplace([task]() { (*task)(); });
         cv.notify_one();
+        return fut;
     }
 
-    virtual void destroy() noexcept override
-    {
+    ~ThreadPool() noexcept {
         stop = true;
         cv.notify_all();
-        for(auto & thr : threads)
-        {
-            if(thr.joinable())
-            {
-                thr.join();
-            }
+        for(auto& thr : threads) {
+            assert(thr.joinable());
+            thr.join();
         }
     }
 
 private:
     std::atomic<bool> stop;
-    std::atomic<unsigned> size;
     std::mutex mtx;
     std::condition_variable cv;
     std::vector<std::thread> threads;
-    std::queue<Request*> requests; // parameters to execute
+    std::queue<std::function<void()>> tasks;
 };
 
-#endif
+#endif // _THREADPOOL_H_
