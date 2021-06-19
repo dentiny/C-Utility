@@ -9,11 +9,11 @@
 template<typename T>
 class BoundedBufferQueue {
 public:
-	BoundedBufferQueue(unsigned int cap_) :
-		cap { cap_ },
-		stop { false },
-		get_counter { 0 },
-		push_counter { 0 } {
+	BoundedBufferQueue(unsigned int cap) :
+		cap_(cap),
+		stop_(false),
+		get_counter_(0),
+		push_counter_(0) {
 	}
 
 	BoundedBufferQueue(const BoundedBufferQueue&) = delete;
@@ -21,46 +21,56 @@ public:
 	BoundedBufferQueue(BoundedBufferQueue&&) = delete;
 	BoundedBufferQueue& operator=(BoundedBufferQueue&&) = delete;
 
-	void get() {
-		++get_counter;
-		std::unique_lock<std::mutex> lck(mtx);
-		cv1.wait(lck, [&]() { return stop || !q.empty(); });
-		if (stop) {
+	void GetFront(T *val) {
+		++get_counter_;
+		std::unique_lock<std::mutex> lck(mtx_);
+		cv1_.wait(lck, [&]() { return stop_ || !queue_.empty(); });
+		if (stop_) {
 			return;
 		}
-		T val = q.front(); q.pop();
-		--get_counter;
-		cv2.notify_one();
+		*val = queue_.front(); queue_.pop();
+		--get_counter_;
+		cv2_.notify_one();
 	}
 
-	void push(int val) {
-		++push_counter;
-		std::unique_lock<std::mutex> lck(mtx);
-		cv2.wait(lck, [&]() { return stop || q.size() < cap; });
-		if (stop) {
+  bool IsEmpty() const {
+    std::lock_guard<std::mutex> lck(mtx_);
+    return queue_.empty();
+  }
+
+  int Size() const {
+    std::lock_guard<std::mutex> lck(mtx_);
+    return static_cast<int>(queue_.size());
+  }
+
+	void Push(T val) {
+		++push_counter_;
+		std::unique_lock<std::mutex> lck(mtx_);
+		cv2_.wait(lck, [&]() { return stop_ || queue_.size() < cap_; });
+		if (stop_) {
 			return;
 		}
-		q.push(val);
-		--push_counter;
-		cv1.notify_one();
+		queue_.push(val);
+		--push_counter_;
+		cv1_.notify_one();
 	}
 
 	~BoundedBufferQueue() noexcept {
-		stop = true;
-		cv1.notify_all();
-		cv2.notify_all();
-		while (get_counter > 0 || push_counter > 0);
+		stop_ = true;
+		cv1_.notify_all();
+		cv2_.notify_all();
+		while (get_counter_ > 0 || push_counter_ > 0);
 	}
 
 private:
-	unsigned cap;
-	bool stop;
-	std::mutex mtx;
-	std::queue<T> q;
-	std::atomic<int> get_counter; // number of blocked get() thread
-	std::atomic<int> push_counter; // number of blocked set() thread
-	std::condition_variable cv1; // used in consumer, to notify producer
-	std::condition_variable cv2; // used in producer, to notify consumer
+	unsigned cap_;
+	bool stop_;
+	mutable std::mutex mtx_;
+	std::queue<T> queue_;
+	std::atomic<int> get_counter_; // number of blocked get() thread
+	std::atomic<int> push_counter_; // number of blocked set() thread
+	std::condition_variable cv1_; // used in consumer, to notify producer
+	std::condition_variable cv2_; // used in producer, to notify consumer
 };
 
 #endif // _BOUNDED_BUFFER_QUEUE_H_
